@@ -1,0 +1,79 @@
+os: "WMF 5"
+version: 1.0.{build}
+
+environment:
+  ModuleName: "NIC.Serverdeployment"
+  MyGetKey:
+    secure: xxxx
+  MyGetPublishUri: "https://www.myget.org/F/crayon/api/v2/package"
+  MyGetSourceUri: "https://www.myget.org/F/crayon/auth/xxxx/api/v2"
+
+branches:
+  only:
+    - master
+
+skip_commits:
+  message: /updated readme.*|update readme.*s/
+
+install:
+  - ps: Get-PackageProvider -Name NuGet -ForceBootstrap | Out-Null
+  - ps: Install-Module Pester -Force
+
+build: off
+
+test_script:
+  - ps: |
+      Add-AppveyorTest -Name "Pester" -Outcome Running
+      $testResults = '.\TestResults.xml'
+      $res = Invoke-Pester -OutputFormat NUnitXml -OutputFile $testResults -CodeCoverage (Get-ChildItem *.ps*1 -Recurse) -PassThru
+      Push-AppveyorArtifact $testResults
+      if ($res.FailedCount -gt 0) {
+          Add-AppveyorMessage -Message "Pester: $($res.FailedCount) tests failed." -Category Error
+          Update-AppveyorTest -Name 'Pester' -Outcome Failed -ErrorMessage "$($res.FailedCount) tests failed."
+          throw "$($res.FailedCount) tests failed."
+      }
+      else {
+          Update-AppveyorTest -Name 'Pester' -Outcome Passed -Duration ([long]$res.Time.TotalMilliseconds)
+          $codeCoveragePercent = (($res.CodeCoverage.NumberOfCommandsExecuted) / ($res.CodeCoverage.NumberOfCommandsAnalyzed)) * 100
+          Add-AppveyorMessage -Message "Code Coverage: $("{0:N2}" -f $codeCoveragePercent)%" -Category Information
+      }
+
+deploy_script:
+  - ps: |
+      if ((! $ENV:APPVEYOR_PULL_REQUEST_NUMBER) -and ($ENV:APPVEYOR_REPO_BRANCH -eq 'master')) {
+        [System.Version]$buildNumber = $env:APPVEYOR_BUILD_VERSION
+        $manifest = Import-LocalizedData -FileName "$($env:ModuleName).psd1"
+        $manifestProperties = @{
+            Path = "$($env:APPVEYOR_BUILD_FOLDER)\$($env:moduleName).psd1"
+            RootModule = ".\$($env:moduleName).psm1"
+            Guid = $manifest.GUID
+            Author = $manifest.Author
+            CompanyName = $manifest.CompanyName
+            Copyright = $manifest.Copyright
+            Description = $manifest.Description
+            FunctionsToExport = $manifest.FunctionsToExport
+            AliasesToExport = $manifest.AliasesToExport
+            CmdletsToExport = $manifest.CmdletsToExport
+            ModuleVersion = $buildNumber
+        }
+        Remove-Item -Path ".\$($env:ModuleName).psd1" -Force
+        New-ModuleManifest @manifestProperties
+        Test-ModuleManifest -Path ".\$($env:ModuleName).psd1"
+        $moduleFiles = Get-ChildItem *
+        $moduleDirectory = New-Item -Path $env:ModuleName -Type Directory
+        Copy-Item -Path $moduleFiles -Destination $moduleDirectory -Recurse
+        Register-PSRepository -Name MyGetFeed -SourceLocation $env:MyGetSourceUri -PublishLocation $env:MyGetPublishUri
+        $publishProperties = @{
+            Path = $moduleDirectory
+            NuGetApiKey = $env:MyGetKey
+            Repository = 'MyGetFeed'
+            Verbose = $false
+        }
+        try {
+            Publish-Module @publishProperties
+        }
+        catch {
+            Write-Warning $_.Exception.Message
+            throw 'Deploy failed.'
+        }
+      }
