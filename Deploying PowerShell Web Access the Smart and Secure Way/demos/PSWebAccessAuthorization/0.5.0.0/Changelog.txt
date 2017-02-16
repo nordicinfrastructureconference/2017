@@ -1,0 +1,4 @@
+#Changelog for PSWebAccessAuthorization
+
+v0.5.0.0
+initial public release to GitHub
